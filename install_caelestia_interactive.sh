@@ -75,6 +75,39 @@ fi
 
 log "Dieses Skript führt interaktive Schritte aus. Du wirst zu Bestätigungen aufgefordert."
 
+# --- NVIDIA-Treiber Unterstützung (interaktiv) ---
+# Dieser Block erkennt eine NVIDIA-GPU (falls lspci verfügbar ist) und bietet an,
+# proprietäre Treiber (nvidia / nvidia-dkms) oder den freien nouveau-Treiber zu installieren.
+# Die ausgewählten Pakete werden zur PKGS-Liste hinzugefügt, bevor pacman sie installiert.
+if command -v lspci >/dev/null 2>&1; then
+  if lspci | grep -i 'nvidia' >/dev/null 2>&1; then
+    log "NVIDIA-GPU erkannt."
+    if ask_yes_no "Möchtest du die proprietären NVIDIA-Treiber installieren (empfohlen für Leistung)?"; then
+      if ask_yes_no "Bevorzugst du nvidia-dkms (wiederaufgebaut bei Kernel-Updates) statt nvidia (kernel-spezifisch)?"; then
+        NVIDIA_PKGS=(nvidia-dkms nvidia-utils lib32-nvidia-utils nvidia-settings)
+        # linux-headers werden für DKMS benötigt; wir fügen das Kernel-Headers-Paket hinzu,
+        # das mit dem aktuell installierten Kernel übereinstimmen sollte (z.B. linux-headers).
+        NVIDIA_PKGS+=(linux-headers)
+      else
+        NVIDIA_PKGS=(nvidia nvidia-utils lib32-nvidia-utils nvidia-settings)
+      fi
+      log "Füge NVIDIA-Pakete zur Installationsliste hinzu: ${NVIDIA_PKGS[*]}"
+      PKGS+=("${NVIDIA_PKGS[@]}")
+    else
+      if ask_yes_no "Möchtest du stattdessen den freien Nouveau-Treiber installieren?"; then
+        log "Füge xf86-video-nouveau zur Installationsliste hinzu."
+        PKGS+=(xf86-video-nouveau)
+      else
+        log "NVIDIA-Treiber werden übersprungen."
+      fi
+    fi
+  else
+    log "Keine NVIDIA-GPU gefunden (keine Treffer in lspci). Überspringe NVIDIA-spezifische Schritte."
+  fi
+else
+  log "lspci nicht gefunden — automatische NVIDIA-Erkennung übersprungen. Wenn du NVIDIA-Treiber installieren möchtest, füge sie manuell zu PKGS hinzu."
+fi
+
 # 1) Systemupdate
 if ask_yes_no "System aktualisieren (pacman -Syu)?"; then
   log "Systemupdate..."

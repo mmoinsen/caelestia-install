@@ -1,8 +1,5 @@
 #!/usr/bin/env bash
-# caelestia-install.sh
-# Vollständiges Arch install script (rEFInd, Nightshift (redshift/gammastep), Gaming (Steam+Proton-GE), greetd/tuigreet, etc.)
-# --- Hinweise: Script NICHT als root ausführen. Starte es als normaler Benutzer mit sudo-Rechten. ---
-
+# caelestia-install.sh - überarbeitet (robuster pacman-Flag-Handling + Parser)
 set -euo pipefail
 IFS=$'\n\t'
 
@@ -26,8 +23,9 @@ OPT_NIGHTSHIFT="redshift"   # redshift | gammastep | none
 OPT_GAMING=0
 OPT_REFIND=0
 
-# pacman options -- wird nach Parsing gesetzt
-PACMAN_OPTS="-S --needed"
+# Pacman flags: als Array, NIE ein zusätzliche "-S" hier eintragen!
+PACMAN_FLAGS=(--needed)
+# --noconfirm wird bei Bedarf in Parsing gesetzt (siehe unten)
 
 # -------------------------
 # Hilfsfunktionen
@@ -57,14 +55,7 @@ die() { echo "ERROR: $*"; exit 1; }
 
 check_not_root() {
   if [ "$(id -u)" -eq 0 ]; then
-    die "Bitte Script **nicht** als root ausführen. Starte es als normaler Benutzer mit sudo-Rechten."
-  fi
-}
-
-build_pacman_opts() {
-  PACMAN_OPTS="-S --needed"
-  if [ "${OPT_NOCONFIRM}" -eq 1 ]; then
-    PACMAN_OPTS="$PACMAN_OPTS --noconfirm"
+    die "Bitte Script NICHT als root ausführen. Starte es als normaler Benutzer (sudo intern verwendet)."
   fi
 }
 
@@ -75,67 +66,59 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --noconfirm)
       OPT_NOCONFIRM=1
+      # füge --noconfirm zu PACMAN_FLAGS (wenn noch nicht drin)
+      if ! printf '%s\n' "${PACMAN_FLAGS[@]}" | grep -qx -- "--noconfirm"; then
+        PACMAN_FLAGS+=("--noconfirm")
+      fi
       shift
       ;;
     --spotify)
-      OPT_SPOTIFY=1
-      shift
-      ;;
+      OPT_SPOTIFY=1; shift ;;
     --discord)
-      OPT_DISCORD=1
-      shift
-      ;;
+      OPT_DISCORD=1; shift ;;
     --zen)
-      OPT_ZEN=1
-      shift
-      ;;
+      OPT_ZEN=1; shift ;;
     --paru)
-      USE_PARU=1
-      shift
-      ;;
+      USE_PARU=1; shift ;;
     --nvidia)
-      OPT_NVIDIA=1
-      shift
-      ;;
+      OPT_NVIDIA=1; shift ;;
     --no-tuigreet)
-      OPT_TUIGREET=0
-      shift
-      ;;
+      OPT_TUIGREET=0; shift ;;
     --gaming)
-      OPT_GAMING=1
-      shift
-      ;;
+      OPT_GAMING=1; shift ;;
     --refind)
-      OPT_REFIND=1
-      shift
-      ;;
+      OPT_REFIND=1; shift ;;
     --nightshift=*)
-      OPT_NIGHTSHIFT="${1#*=}"
-      shift
-      ;;
+      OPT_NIGHTSHIFT="${1#*=}"; shift ;;
     --vscode=*)
-      OPT_VSCODE="${1#*=}"
-      shift
-      ;;
+      OPT_VSCODE="${1#*=}"; shift ;;
     -h|--help)
-      print_help
-      exit 0
-      ;;
-    --) # stop parsing
-      shift
-      break
-      ;;
+      print_help; exit 0 ;;
+    --) shift; break ;; # stop parsing
     *)
       die "Unknown option: $1. Use --help to list options."
       ;;
   esac
 done
 
-# Build pacman options after parsing
-build_pacman_opts
+# -------------------------
+# Pacman helper: sicher aufrufen
+# -------------------------
+pacman_sync_update_with_pkgs() {
+  # usage: pacman_sync_update_with_pkgs pkg1 pkg2 ...
+  local pkgs=( "$@" )
+  # Update DB + upgrade then install pkgs in one call to keep behavior consistent
+  sudo pacman -Syu "${PACMAN_FLAGS[@]}" "${pkgs[@]}"
+}
+
+pacman_install_pkgs() {
+  # usage: pacman_install_pkgs pkg1 pkg2 ...
+  local pkgs=( "$@" )
+  sudo pacman -S "${PACMAN_FLAGS[@]}" "${pkgs[@]}"
+}
 
 # -------------------------
-# Funktionalität (module)
+# Module Funktionen
 # -------------------------
 check_sudo() {
   if ! command -v sudo >/dev/null 2>&1; then
@@ -154,7 +137,8 @@ install_basic_packages() {
     pipewire pipewire-alsa pipewire-pulse pipewire-jack
     xdg-utils dbus greetd
   )
-  sudo pacman -Syu $PACMAN_OPTS "${PKGS[@]}"
+  # Verwende defined helper, vermeide mehrfache -S flags
+  pacman_sync_update_with_pkgs "${PKGS[@]}"
 }
 
 install_aur_helper() {
@@ -163,7 +147,8 @@ install_aur_helper() {
       AUR_HELPER="paru"
     else
       echo "==> Installing paru..."
-      sudo pacman -S $PACMAN_OPTS git base-devel
+      pacman_install_pkgs git base-devel
+      local tmpd
       tmpd=$(mktemp -d)
       git clone https://aur.archlinux.org/paru.git "$tmpd"
       pushd "$tmpd" >/dev/null
@@ -173,12 +158,9 @@ install_aur_helper() {
       AUR_HELPER="paru"
     fi
   else
-    if command -v paru >/dev/null 2>&1; then
-      AUR_HELPER="paru"
-    elif command -v yay >/dev/null 2>&1; then
-      AUR_HELPER="yay"
-    else
-      AUR_HELPER=""
+    if command -v paru >/dev/null 2>&1; then AUR_HELPER="paru"
+    elif command -v yay >/dev/null 2>&1; then AUR_HELPER="yay"
+    else AUR_HELPER=""
     fi
   fi
   echo "AUR helper: ${AUR_HELPER:-none}"
@@ -191,27 +173,20 @@ install_aur_packages() {
   fi
 
   local AUR_PKGS=()
-  if [ "$OPT_DISCORD" -eq 1 ]; then
-    # Paketnamen in AUR können variieren; überprüfe ggf. lokal
-    AUR_PKGS+=(openasar-bin equicord)
-  fi
-  if [ "$OPT_SPOTIFY" -eq 1 ]; then
-    AUR_PKGS+=(spicetify-cli)
-  fi
-  if [ "$OPT_VSCODE" = "codium" ]; then
-    AUR_PKGS+=(vscodium-bin)
-  fi
-  if [ "$OPT_NVIDIA" -eq 1 ]; then
-    AUR_PKGS+=(hyprland-nvidia)
-  fi
-  if [ "$OPT_GAMING" -eq 1 ]; then
-    AUR_PKGS+=(proton-ge-custom-bin)
-  fi
+  [ "$OPT_DISCORD" -eq 1 ] && AUR_PKGS+=(openasar-bin equicord)
+  [ "$OPT_SPOTIFY" -eq 1 ] && AUR_PKGS+=(spicetify-cli)
+  [ "$OPT_VSCODE" = "codium" ] && AUR_PKGS+=(vscodium-bin)
+  [ "$OPT_NVIDIA" -eq 1 ] && AUR_PKGS+=(hyprland-nvidia)
+  [ "$OPT_GAMING" -eq 1 ] && AUR_PKGS+=(proton-ge-custom-bin)
 
   if [ "${#AUR_PKGS[@]}" -gt 0 ]; then
     echo "==> Installing AUR packages: ${AUR_PKGS[*]}"
-    # Use AUR helper without sudo (helpers call sudo as needed)
-    $AUR_HELPER -S --needed "${AUR_PKGS[@]}" ${OPT_NOCONFIRM:+--noconfirm}
+    # call helper (paru/yay) normally — they accept --noconfirm if present in PACMAN_FLAGS, but pass own flags
+    if [ "$AUR_HELPER" = "paru" ]; then
+      paru -S --needed "${AUR_PKGS[@]}" ${OPT_NOCONFIRM:+--noconfirm}
+    else
+      yay -S --needed "${AUR_PKGS[@]}" ${OPT_NOCONFIRM:+--noconfirm}
+    fi
   fi
 }
 
@@ -236,7 +211,7 @@ patch_refind_kernel_param() {
 
 configure_nvidia_refind() {
   echo "==> Installing NVIDIA drivers..."
-  sudo pacman -S $PACMAN_OPTS nvidia nvidia-utils nvidia-settings lib32-nvidia-utils
+  pacman_install_pkgs nvidia nvidia-utils nvidia-settings lib32-nvidia-utils
 
   if [ "$OPT_REFIND" -eq 1 ] || detect_refind; then
     patch_refind_kernel_param
@@ -260,7 +235,7 @@ enable_multilib_if_missing() {
     echo "==> Enabling [multilib] in /etc/pacman.conf ..."
     sudo cp /etc/pacman.conf /etc/pacman.conf.bak || true
     sudo sed -i '/#\[multilib\]/,/#Include/{ s/^#// }' /etc/pacman.conf || true
-    sudo pacman -Syu $PACMAN_OPTS
+    sudo pacman -Syu "${PACMAN_FLAGS[@]}"
   else
     echo "[multilib] already enabled"
   fi
@@ -269,7 +244,7 @@ enable_multilib_if_missing() {
 install_gaming_stack() {
   echo "==> Installing gaming stack (Steam, Vulkan, lib32, Mangohud, Gamescope, Lutris)..."
   enable_multilib_if_missing
-  sudo pacman -S $PACMAN_OPTS steam vulkan-icd-loader lib32-vulkan-icd-loader lib32-nvidia-utils mangohud gamescope lutris
+  pacman_install_pkgs steam vulkan-icd-loader lib32-vulkan-icd-loader lib32-nvidia-utils mangohud gamescope lutris
 }
 
 setup_repo_and_run_installfish() {
@@ -282,7 +257,7 @@ setup_repo_and_run_installfish() {
 
   if ! command -v fish >/dev/null 2>&1; then
     echo "fish not installed, installing..."
-    sudo pacman -S $PACMAN_OPTS fish
+    pacman_install_pkgs fish
   fi
 
   FISH_CMD="$DEST/install.fish"
@@ -309,9 +284,8 @@ setup_greetd_tuigreet() {
     return
   fi
   echo "==> Installing/configuring greetd + tuigreet..."
-  sudo pacman -S $PACMAN_OPTS greetd-tuigreet || true
+  pacman_install_pkgs greetd-tuigreet || true
 
-  # wrapper to start hyprland for logged-in user
   WRAPPER="/usr/local/bin/caelestia-start-hyprland"
   sudo tee "$WRAPPER" >/dev/null <<'EOF'
 #!/usr/bin/env bash
@@ -319,7 +293,6 @@ exec Hyprland
 EOF
   sudo chmod +x "$WRAPPER"
 
-  # backup & write config
   if [ -f /etc/greetd/config.toml ]; then
     sudo cp /etc/greetd/config.toml /etc/greetd/config.toml.bak || true
   fi
@@ -339,9 +312,8 @@ install_nightshift() {
   case "$OPT_NIGHTSHIFT" in
     redshift)
       echo "==> Installing Redshift and enabling systemd-user service..."
-      sudo pacman -S $PACMAN_OPTS redshift || true
+      pacman_install_pkgs redshift || true
       mkdir -p "${HOME}/.config/systemd/user"
-      mkdir -p "${HOME}/.config/redshift"
       cat > "${HOME}/.config/systemd/user/redshift.service" <<EOF
 [Unit]
 Description=Redshift (adjust screen color temperature)
@@ -359,7 +331,7 @@ EOF
       ;;
     gammastep)
       echo "==> Installing Gammastep and enabling systemd-user service..."
-      sudo pacman -S $PACMAN_OPTS gammastep || true
+      pacman_install_pkgs gammastep || true
       mkdir -p "${HOME}/.config/systemd/user"
       cat > "${HOME}/.config/systemd/user/gammastep.service" <<EOF
 [Unit]
@@ -415,6 +387,7 @@ EOF
 main() {
   check_not_root
   check_sudo
+
   install_basic_packages
   install_aur_helper
 
@@ -426,10 +399,7 @@ main() {
     configure_nvidia_refind
   fi
 
-  # install AUR packages last (some base pkgs may be required)
-  if [ -n "$AUR_HELPER" ] || [ "$OPT_DISCORD" -eq 1 ] || [ "$OPT_SPOTIFY" -eq 1 ] || [ "$OPT_GAMING" -eq 1 ]; then
-    install_aur_packages
-  fi
+  install_aur_packages
 
   setup_repo_and_run_installfish
   setup_greetd_tuigreet

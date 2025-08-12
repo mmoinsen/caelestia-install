@@ -109,6 +109,26 @@ else
 fi
 
 # 1) Systemupdate
+
+# --- Login-Manager (greetd + tuigreet) ---
+# Interaktiver Block: Wenn du einen Login-Manager möchtest, wird 'greetd' zur PKGS-Liste
+# hinzugefügt. 'tuigreet' liegt in AUR und wird zur AUR_PKGS-Liste hinzugefügt, falls gewünscht.
+ENABLE_GREETD=false
+
+if ask_yes_no "Möchtest du den Login-Manager 'greetd' (mit tuigreet als möglichem Greeter) installieren?"; then
+  log "greetd wird zur Installationsliste hinzugefügt."
+  PKGS+=(greetd)
+  ENABLE_GREETD=true
+  if ask_yes_no "Soll 'tuigreet' aus AUR installiert werden (benötigt AUR-Helper ${AUR_HELPER})?"; then
+    log "Füge 'tuigreet' zur AUR-Installationsliste hinzu."
+    AUR_PKGS+=(tuigreet)
+  else
+    log "tuigreet wird nicht installiert. Du kannst später einen anderen Greeter wählen."
+  fi
+else
+  log "Kein Login-Manager wird installiert."
+fi
+
 if ask_yes_no "System aktualisieren (pacman -Syu)?"; then
   log "Systemupdate..."
   sudo pacman -Syu
@@ -123,6 +143,17 @@ echo "${PKGS[*]}"
 if ask_yes_no "Offizielle Pakete jetzt installieren?"; then
   log "Pakete mit pacman installieren..."
   sudo pacman -S --needed "${PKGS[@]}"
+
+  # Wenn greetd zur Installation ausgewählt wurde — jetzt aktivieren/ starten?
+  if [[ "${ENABLE_GREETD:-false}" = true ]]; then
+    if ask_yes_no "greetd jetzt aktivieren und starten (systemweit)?"; then
+      log "Aktiviere und starte greetd..."
+      sudo systemctl enable --now greetd.service || echo "Warnung: Aktivierung von greetd fehlgeschlagen."
+    else
+      log "greetd wird nicht automatisch aktiviert."
+    fi
+  fi
+
 else
   log "Installation offizieller Pakete übersprungen."
 fi
